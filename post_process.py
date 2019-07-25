@@ -5,7 +5,7 @@ from typing import Callable
 from collections import deque
 from joulescope.data_recorder import DataReader
 
-CHUNK_SIZE = 2**16
+CHUNK_SIZE = 65536
 
 class PostProcess:
     def __init__(self):
@@ -36,23 +36,30 @@ class PostProcess:
         maximum, minimum = statistics['max'], statistics['min']
 
         width = 3.5 * statistics['σ'] / (id_end - id_start)**(1. / 3)
+        bins = math.ceil((maximum - minimum) / width)
 
-        hist = histogram(width, maximum, minimum, signal, _t1, _t2)
+        _start = id_start
+        _end = id_start + CHUNK_SIZE if id_start + CHUNK_SIZE < id_end else id_end
 
-        for i in range(id_start, id_end, CHUNK_SIZE):
+        data = reader.get_calibrated(_start, _end)
+        hist, bin_edges = np.histogram(data[signal_index], range=(minimum,maximum), bins=bins)
+
+        for i in range(_end, id_end, CHUNK_SIZE):
             print('progress: {:.3} %\t\r'.format(((i - id_start) / (id_end - id_start)) * 100), end='')
+
             start = i
             end = i + CHUNK_SIZE if i + CHUNK_SIZE < id_end else id_end
-            data = reader.get_calibrated(start, end)
 
-            for v in data[signal_index]:
-                hist.add_value(v)
+            data = reader.get_calibrated(start, end)
+            hist += np.histogram(data[signal_index], range=(minimum, maximum), bins=bins)[0]
 
         reader.close()
 
-        return hist.get_histogram_array(), hist.width, hist.minimum
+        db = np.array(np.diff(bin_edges), float)
 
-    def max_window(self, reader, duration: int):
+        return hist/db/hist.sum(), width, minimum
+
+    def max_window(self, reader: DataReader, duration: int):
         signal_index = _get_signal_index('current')
         id_start, id_end = reader.sample_id_range
         id_duration = reader.time_to_sample_id(duration)
@@ -69,9 +76,6 @@ class PostProcess:
         start_mark = 0
         end_mark = id_duration
 
-        # There is probably some numpy way to do this that could also order you coffee at the same time,
-        # but I am not sure what that could be and this is already fast enough for the point
-        # of development that I am at currently
         for i in range(id_duration, id_end, CHUNK_SIZE):
             print('progress: {:.3} %\t\r'.format(((i) / id_end) * 100), end='')
             start = i
@@ -94,12 +98,9 @@ class PostProcess:
         Cumulative Distribution function
         """
         hist, width, minimum = self.histogram(reader, signal=signal)
-
         _cdf = np.zeros(len(hist))
-        _cdf[0] = hist[0]
-        for i, hist_val in enumerate(hist, 1):
+        for i, hist_val in enumerate(hist):
             _cdf[i] = _cdf[i - 1] + hist_val
-
         return _cdf, width, minimum
 
     def ccdf(self, reader: DataReader, signal: str = 'current'):
@@ -120,46 +121,6 @@ def _get_signal_index(signal: str):
     return _signal_index[signal]
 
 
-def _get_max_min(reader_obj, id_start, id_end):
-    maximum = 0
-    minimum = 1e9  # assuming we are not consuming gigaamps or gigavolts through joulescope
-
-    for i in range(id_start, id_end, CHUNK_SIZE):
-        start = i
-        end = i + CHUNK_SIZE if i + CHUNK_SIZE < id_end else id_end
-
-        # data[0] is current, data[1] is voltage
-        data = reader_obj.get_calibrated(start, end)
-        for v in data[0]:
-            maximum = max(v, maximum)
-            minimum = min(v, minimum)
-
-    return maximum, minimum
-
-
-class histogram():
-
-    def __init__(self, width, maximum, minimum, signal, t0=None, t1=None):
-        self.num_bins = math.ceil((maximum - minimum) / width)
-        self._hist = np.zeros(self.num_bins)
-        self.width = width
-        self.maximum = maximum
-        self.minimum = minimum
-        self.signal = signal
-        self.t0 = t0
-        self.t1 = t1
-        self._num_entries = 0
-
-    def _linear_bin(self, val):
-        return math.floor((val - self.minimum) * (self.num_bins - 1) / (self.maximum - self.minimum))
-
-    def add_value(self, val: float):
-        self._num_entries += 1
-        self._hist[self._linear_bin(val)] += 1
-
-    def get_histogram_array(self):
-        return self._hist / self._num_entries
-
 def hist_main():
     import matplotlib.pyplot as plt
     fname = '../sample_data/cleaner.jls'
@@ -168,8 +129,11 @@ def hist_main():
     reader.open(fname)
 
     p = PostProcess()
+    t1 = time.time()
     vs, width, minimum = p.histogram(reader)
-    xs = [i * width + minimum for i in range(len(vs))]
+    print(time.time() - t1)
+
+    xs = [minimum + width * i  for i in range(len(vs))]
 
     plt.bar(xs, vs, width=width)
     plt.xlabel('Current (mA)')
@@ -207,5 +171,4 @@ def window_main():
 
 
 if __name__ == '__main__':
-    hist_main()
-    window_main()
+    cdf_main()
