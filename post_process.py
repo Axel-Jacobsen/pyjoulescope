@@ -7,10 +7,9 @@ from joulescope.data_recorder import DataReader
 
 CHUNK_SIZE = 2**16
 
-
 class PostProcess:
     def __init__(self):
-        pass
+        self._hist_cache = None
 
     def histogram(self,
                   reader: DataReader,
@@ -18,9 +17,7 @@ class PostProcess:
                   t2: float = None,
                   signal: str = 'current') -> (np.array, float, float):
         """
-        Creates a histogram of current over time
-        Bin widths defined by Sturges' Formula - assuming an approximately
-        normal distribution of data, and relatively simple compared to it's counterparts
+        Creates a histogram of `signal` over time
 
         returns:
             hist: array of number of indcidences of data in that bin
@@ -35,30 +32,25 @@ class PostProcess:
         id_start = reader.time_to_sample_id(_t1)
         id_end = reader.time_to_sample_id(_t2)
 
-        statistics = reader.statistics_get(_t1, _t2)['signals'][signal]['statistics']
-        maximum, minimum = statistics['max'], statistics['min']  # when does max/min from statistics not equal max/min from _get_max_min?
+        statistics = reader.statistics_get( _t1, _t2)['signals'][signal]['statistics']
+        maximum, minimum = statistics['max'], statistics['min']
 
-        h = 3.5 * statistics['σ'] / (id_end - id_start)**(1. / 3)
-        num_bins = math.ceil((maximum - minimum) / h)
+        width = 3.5 * statistics['σ'] / (id_end - id_start)**(1. / 3)
 
-        _binning = lambda v: math.floor((v - minimum) * (num_bins - 1) / (maximum - minimum))
-        hist = np.zeros(num_bins)
+        hist = histogram(width, maximum, minimum, signal, _t1, _t2)
 
         for i in range(id_start, id_end, CHUNK_SIZE):
             print('progress: {:.3} %\t\r'.format(((i - id_start) / (id_end - id_start)) * 100), end='')
             start = i
             end = i + CHUNK_SIZE if i + CHUNK_SIZE < id_end else id_end
-
             data = reader.get_calibrated(start, end)
 
             for v in data[signal_index]:
-                hist[_binning(v)] += 1
+                hist.add_value(v)
 
         reader.close()
-        hist /= (id_end - id_start)  # Normalize histogram bin counts
-        width = h
 
-        return hist, width, minimum
+        return hist.get_histogram_array(), hist.width, hist.minimum
 
     def max_window(self, reader, duration: int):
         signal_index = _get_signal_index('current')
@@ -138,17 +130,39 @@ def _get_max_min(reader_obj, id_start, id_end):
 
         # data[0] is current, data[1] is voltage
         data = reader_obj.get_calibrated(start, end)
-        for i in range(len(data[0])):
-            v = data[0][i]
+        for v in data[0]:
             maximum = max(v, maximum)
             minimum = min(v, minimum)
 
     return maximum, minimum
 
 
+class histogram():
+
+    def __init__(self, width, maximum, minimum, signal, t0=None, t1=None):
+        self.num_bins = math.ceil((maximum - minimum) / width)
+        self._hist = np.zeros(self.num_bins)
+        self.width = width
+        self.maximum = maximum
+        self.minimum = minimum
+        self.signal = signal
+        self.t0 = t0
+        self.t1 = t1
+        self._num_entries = 0
+
+    def _linear_bin(self, val):
+        return math.floor((val - self.minimum) * (self.num_bins - 1) / (self.maximum - self.minimum))
+
+    def add_value(self, val: float):
+        self._num_entries += 1
+        self._hist[self._linear_bin(val)] += 1
+
+    def get_histogram_array(self):
+        return self._hist / self._num_entries
+
 def hist_main():
     import matplotlib.pyplot as plt
-    fname = 'sample_data/shorty.jls'
+    fname = '../sample_data/cleaner.jls'
 
     reader = DataReader()
     reader.open(fname)
@@ -164,7 +178,7 @@ def hist_main():
 
 def cdf_main():
     import matplotlib.pyplot as plt
-    fname = 'sample_data/cleaner.jls'
+    fname = '../sample_data/cleaner.jls'
 
     reader = DataReader()
     reader.open(fname)
@@ -180,7 +194,7 @@ def cdf_main():
 
 
 def window_main():
-    fname = 'sample_data/cleaner.jls'
+    fname = '../sample_data/cleaner.jls'
 
     reader = DataReader()
     reader.open(fname)
@@ -193,4 +207,5 @@ def window_main():
 
 
 if __name__ == '__main__':
+    hist_main()
     window_main()
