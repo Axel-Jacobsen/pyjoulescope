@@ -9,6 +9,7 @@ CHUNK_SIZE = 65536
 
 
 class PostProcess:
+
     def __init__(self):
         self._c = None
 
@@ -17,6 +18,16 @@ class PostProcess:
                   t0: float = None,
                   t1: float = None,
                   signal: str = 'current') -> (np.array, float, float):
+        """Creates a histogram of the data contained by the reader object, between t0 and t1
+
+        :param reader: The opened DataReader object
+        :param t0: start time of analysis, in seconds
+        :param t1: end time of analysis, in seconds
+        :param signal: the signal that will be analysied, either 'current' or 'voltage'
+
+        :return: normalized array of values representing histogram (integral over the histogram is 1, 
+                 gives probability density function) and an array of bin edges for the histogram
+        """
 
         t0 = t0 if t0 else 0
         t1 = t1 if t1 else reader.duration
@@ -93,19 +104,6 @@ class PostProcess:
                    t1: float,
                    bins: np.array or int,
                    signal: str = 'current') -> (np.array, float, float):
-        """
-        Creates a histogram of `signal` over time
-
-        :params:
-            reader: DataReader object, opened with the data to be processed
-            t0: start time which will be considered
-            t1: end time which will be considered
-            bins: np.array of edges, or int which determines number of bins
-
-        returns:
-            hist: array of number of indcidences of data in that bin
-            bin_edges: edges of the bins (upper and lower), len(hist) + 1
-        """
         if t0 == t1:
             if isinstance(bins, np.ndarray):
                 return np.zeros(len(bins) - 1), bins
@@ -172,8 +170,12 @@ class PostProcess:
         return max, start_mark, end_mark
 
     def cdf(self, reader: DataReader, signal: str = 'current'):
-        """
-        Cumulative Distribution function
+        """Cumulative Distribution function
+
+        :param reader: DataReader object with the data in question
+        :param signal: the signal that will be analysied, either 'current' or 'voltage'
+
+        :returns: an array representing a cdf and its bin edges
         """
         hist, bin_edges = self.histogram(reader, signal=signal)
         _cdf = np.zeros(len(hist))
@@ -182,8 +184,13 @@ class PostProcess:
         return _cdf, bin_edges
 
     def ccdf(self, reader: DataReader, signal: str = 'current'):
-        """
-        Complementary Cumulative Distribution Function
+        """Complementary Cumulative Distribution Function
+
+
+        :param reader: DataReader object with the data in question
+        :param signal: the signal that will be analysied, either 'current' or 'voltage'
+
+        :returns: an array representing a ccdf and its bin edges
         """
         _cdf, bin_edges = self.cdf(reader, signal=signal)
         return 1 - _cdf, bin_edges
@@ -272,7 +279,6 @@ def hist_main():
         assert(np.array_equal(bin_edges1, bin_edges2))
         assert(abs(np.sum(v1s*np.diff(bin_edges1)) - 1) < 0.001)
         assert(np.array_equal(v1s, v2s))
-
 
 
 def cdf_main():
