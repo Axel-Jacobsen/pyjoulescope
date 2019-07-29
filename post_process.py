@@ -40,6 +40,7 @@ class PostProcess:
         width = 3.5 * statistics['σ'] / (id_end - id_start)**(1. / 3)
         num_bins = math.ceil((maximum - minimum) / width)
 
+        # If there is a cache, see if it can be used to speed up computation
         if self._c is not None:
 
             c_t0 = self._c.t0
@@ -94,6 +95,7 @@ class PostProcess:
                 self._c.t1 = t1
                 return hist_edges_out
 
+        # If no cache could be used, then calculate the histogram without it
         hist, bin_edges = self._calculate_histogram(reader, t0, t1, num_bins, signal)
         self._c = HistogramCache(hist, t0, t1, bin_edges)
         return self._c.normalized, bin_edges
@@ -135,8 +137,19 @@ class PostProcess:
 
         return hist, bin_edges
 
-    def max_window(self, reader: DataReader, duration: int):
-        signal_index = _get_signal_index('current')
+    def max_window(self, reader: DataReader, duration: int, signal: str = 'current'):
+        """Max Windowing function
+
+        Finds the maximum current consumption over a certain duration for a dataset
+        TODO add functionality for power
+
+        :param reader: DataReader object with the data in question
+        :param duration: lenth of window in seconds that will be analyzed
+        :param signal: the signal that will be analysied, either 'current' or 'voltage'
+
+        :returns: an array representing a cdf and its bin edges
+        """
+        signal_index = _get_signal_index(signal)
         id_start, id_end = reader.sample_id_range
         id_duration = reader.time_to_sample_id(duration)
         queue = deque(maxlen=id_duration)
