@@ -17,13 +17,18 @@ class PostProcess:
                   reader: DataReader,
                   t0: float = None,
                   t1: float = None,
-                  signal: str = 'current') -> (np.array, float, float):
+                  num_bins: int = None,
+                  signal: str = 'current',
+                  norm: str = 'density') -> (np.array, float, float):
         """Creates a histogram of the data contained by the reader object, between t0 and t1
 
         :param reader: The opened DataReader object
         :param t0: start time of analysis, in seconds
         :param t1: end time of analysis, in seconds
+        :param num_bins: number of bins for the histogram
         :param signal: the signal that will be analysied, either 'current' or 'voltage'
+        :param norm: normalization of the histogram counts, either 'density' (integral over 
+                     histogram is 1), 'unity' (sum over histograms is 1), or None (no normalization)
 
         :return: normalized array of values representing histogram (integral over the histogram is 1, 
                  gives probability density function) and an array of bin edges for the histogram
@@ -38,10 +43,17 @@ class PostProcess:
         statistics = reader.statistics_get(t0, t1)['signals'][signal]['statistics']
         maximum, minimum = statistics['max'], statistics['min']
         width = 3.5 * statistics['σ'] / (id_end - id_start)**(1. / 3)
-        num_bins = math.ceil((maximum - minimum) / width)
+        _num_bins = num_bins if num_bins is not None else math.ceil((maximum - minimum) / width)
 
-        # If there is a cache, see if it can be used to speed up computation
-        if self._c is not None:
+        # if cache doesnt exist we cant use the cache
+        # if num_bins is none, we use the cache (and our bins are the same as the caches bins)
+        # if num_bins is not none, and if the number of bins is equal to the number of bins 
+        #    of the cache, then we use the cache
+        cache_exists = self._c is not None
+        num_bins_doesnt_exist = num_bins is None
+        num_bins_equal_cache_bins = num_bins is not None and (num_bins == len(self._c.bin_edges) - 1)
+
+        if cache_exists and (num_bins_doesnt_exist or num_bins_equal_cache_bins):
 
             c_t0 = self._c.t0
             c_t1 = self._c.t1
@@ -52,7 +64,7 @@ class PostProcess:
                 hist, bin_edges = self._calculate_histogram(reader, t0, t1, c_bin_edges, signal)
                 if (t1 - t0) < self._c.duration:
                     self._c = HistogramCache(hist, t0, t1, c_bin_edges)
-                return _normalize_hist(hist, c_bin_edges)
+                return self._normalize_hist(hist, c_bin_edges, norm)
             
             # lower bound of new hist is below lower bound of cache, upper bound of new hist is in cache
             if t0 < c_t0 and c_t0 <= t1 <= c_t1:
@@ -60,11 +72,11 @@ class PostProcess:
                 if t1 < (c_t0 + c_t1) / 2:
                     lower_chunk, bin_edges = self._calculate_histogram(reader, t0, c_t0, c_bin_edges, signal)
                     upper_chunk, bin_edges = self._calculate_histogram(reader, c_t0, t1, c_bin_edges, signal)
-                    hist_edges_out = _normalize_hist(lower_chunk + upper_chunk, c_bin_edges)
+                    hist_edges_out = self._normalize_hist(lower_chunk + upper_chunk, c_bin_edges, norm)
                 else:
                     lower_chunk, bin_edges = self._calculate_histogram(reader, t0, c_t0, c_bin_edges, signal)
                     upper_chunk, bin_edges = self._calculate_histogram(reader, t1, c_t1, c_bin_edges, signal)
-                    hist_edges_out = _normalize_hist(lower_chunk + self._c.hist - upper_chunk, c_bin_edges)
+                    hist_edges_out = self._normalize_hist(lower_chunk + self._c.hist - upper_chunk, c_bin_edges, norm)
                 self._c.hist += lower_chunk
                 self._c.t0 = t0
                 return hist_edges_out
@@ -74,11 +86,11 @@ class PostProcess:
                 # if the new hist less than what we would have to calculate with the cache, just calculate new hist
                 if (t1 - t0) < self._c.duration / 2:
                     hist, bin_edges = self._calculate_histogram(reader, t0, t1, c_bin_edges, signal)
-                    return _normalize_hist(hist, c_bin_edges)
+                    return self._normalize_hist(hist, c_bin_edges, norm)
                 else:
                     lower_chunk, bin_edges = self._calculate_histogram(reader, c_t0, t0, c_bin_edges, signal)
                     upper_chunk, bin_edges = self._calculate_histogram(reader, t1, c_t1, c_bin_edges, signal)
-                    return _normalize_hist(self._c.hist - lower_chunk - upper_chunk, c_bin_edges)
+                    return self._normalize_hist(self._c.hist - lower_chunk - upper_chunk, c_bin_edges, norm)
 
             # lower bound of new hist is in cache, upper is above it
             if c_t0 <= t0 <= c_t1 and c_t1 < t1:
@@ -86,19 +98,19 @@ class PostProcess:
                 if t0 < (c_t1 + c_t0) / 2:
                     lower_chunk, bin_edges = self._calculate_histogram(reader, c_t0, t0, c_bin_edges, signal)
                     upper_chunk, bin_edges = self._calculate_histogram(reader, c_t1, t1, c_bin_edges, signal)
-                    hist_edges_out = _normalize_hist(self._c.hist - lower_chunk + upper_chunk, c_bin_edges)
+                    hist_edges_out = self._normalize_hist(self._c.hist - lower_chunk + upper_chunk, c_bin_edges, norm)
                 else:
                     lower_chunk, bin_edges = self._calculate_histogram(reader, t0, c_t1, c_bin_edges, signal)
                     upper_chunk, bin_edges = self._calculate_histogram(reader, c_t1, t1, c_bin_edges, signal)
-                    hist_edges_out = _normalize_hist(lower_chunk + upper_chunk, c_bin_edges)
+                    hist_edges_out = self._normalize_hist(lower_chunk + upper_chunk, c_bin_edges, norm)
                 self._c.hist += upper_chunk
                 self._c.t1 = t1
                 return hist_edges_out
 
         # If no cache could be used, then calculate the histogram without it
-        hist, bin_edges = self._calculate_histogram(reader, t0, t1, num_bins, signal)
+        hist, bin_edges = self._calculate_histogram(reader, t0, t1, _num_bins, signal)
         self._c = HistogramCache(hist, t0, t1, bin_edges)
-        return self._c.normalized, bin_edges
+        return self._normalize_hist(hist, bin_edges, norm)
 
     def _calculate_histogram(self,
                    reader: DataReader,
@@ -190,7 +202,7 @@ class PostProcess:
 
         :returns: an array representing a cdf and its bin edges
         """
-        hist, bin_edges = self.histogram(reader, signal=signal)
+        hist, bin_edges = self.histogram(reader, signal=signal, norm='unity')
         _cdf = np.zeros(len(hist))
         for i, hist_val in enumerate(hist):
             _cdf[i] = _cdf[i - 1] + hist_val
@@ -199,7 +211,6 @@ class PostProcess:
     def ccdf(self, reader: DataReader, signal: str = 'current'):
         """Complementary Cumulative Distribution Function
 
-
         :param reader: DataReader object with the data in question
         :param signal: the signal that will be analysied, either 'current' or 'voltage'
 
@@ -207,6 +218,17 @@ class PostProcess:
         """
         _cdf, bin_edges = self.cdf(reader, signal=signal)
         return 1 - _cdf, bin_edges
+
+    def _normalize_hist(self, hist, bin_edges, norm: str = 'density'):
+        if norm == 'density':
+            db = np.array(np.diff(bin_edges), float)
+            return hist/db/hist.sum(), bin_edges
+        elif norm == 'unity':
+            return hist/hist.sum(), bin_edges
+        elif norm == None:
+            return hist, bin_edges
+        else:
+            raise RuntimeWarning('_normalize_hist invalid normalization; possible values are "density", "unity", or None')
 
 
 class HistogramCache:
@@ -221,13 +243,6 @@ class HistogramCache:
         return self.bin_edges[0]
 
     @property
-    def normalized(self):
-        """
-        Return a histogram over which the integral is one
-        """
-        return _normalize_hist(self.hist, self.bin_edges)[0]
-    
-    @property
     def duration(self):
         return self.t1 - self.t0
 
@@ -239,11 +254,6 @@ def _get_signal_index(signal: str):
         raise RuntimeError(
             'Invalid Signal Request; possible values: "voltage", "current"')
     return _signal_index[signal]
-
-
-def _normalize_hist(hist, bin_edges):
-    db = np.array(np.diff(bin_edges), float)
-    return hist/db/hist.sum(), bin_edges
 
 
 def hist_main():
@@ -286,13 +296,18 @@ def hist_main():
 
         t3 = time.time()
         unnormalized, bin_edges2 = p._calculate_histogram(reader, _t0, _t1, bin_edges0)
-        v2s, bin_edges2 = _normalize_hist(unnormalized, bin_edges2)
+        v2s, bin_edges2 = p._normalize_hist(unnormalized, bin_edges2)
         delt3 = time.time() - t3
         print('W/O Cache:', delt3)
         assert(np.array_equal(bin_edges1, bin_edges2))
         assert(abs(np.sum(v1s*np.diff(bin_edges1)) - 1) < 0.001)
         assert(np.array_equal(v1s, v2s))
 
+        t4 = time.time()
+        v4s, _ = p.histogram(reader, t0=_t0, t1=_t1, num_bins = 448, norm='unity')
+        delt4 = time.time() - t4
+        print('W/ unique bins:', delt4)
+        assert(abs(v4s.sum() - 1) < 0.001)
 
 def cdf_main():
     import matplotlib.pyplot as plt
